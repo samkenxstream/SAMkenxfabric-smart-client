@@ -29,7 +29,7 @@ General:
     ReplicationBufferSize: 20971520
     ReplicationPullTimeout: 5s
     ReplicationRetryTimeout: 5s
-    ListenAddress: 127.0.0.1
+    ListenAddress: 0.0.0.0
     ListenPort: {{ .OrdererPort Orderer "Cluster" }}
   Keepalive:
     ServerMinInterval: 60s
@@ -41,7 +41,7 @@ General:
   LocalMSPID: {{ ($w.Organization Orderer.Organization).MSPID }}
   Profile:
     Enabled: false
-    Address: 127.0.0.1:{{ .OrdererPort Orderer "Profile" }}
+    Address: {{ .OrdererAddress Orderer "Profile" }}
   BCCSP:
     Default: SW
     SW:
@@ -53,39 +53,6 @@ General:
     TimeWindow: 15m
 FileLedger:
   Location: {{ .OrdererDir Orderer }}/system
-  Prefix: hyperledger-fabric-ordererledger
-{{ if eq .Consensus.Type "kafka" -}}
-Kafka:
-  Retry:
-    ShortInterval: 5s
-    ShortTotal: 10m
-    LongInterval: 5m
-    LongTotal: 12h
-    NetworkTimeouts:
-      DialTimeout: 10s
-      ReadTimeout: 10s
-      WriteTimeout: 10s
-    Metadata:
-      RetryBackoff: 250ms
-      RetryMax: 3
-    Producer:
-      RetryBackoff: 100ms
-      RetryMax: 3
-    Consumer:
-      RetryBackoff: 2s
-  Topic:
-    ReplicationFactor: 1
-  Verbose: false
-  TLS:
-    Enabled: false
-    PrivateKey:
-    Certificate:
-    RootCAs:
-  SASLPlain:
-    Enabled: false
-    User:
-    Password:
-  Version:{{ end }}
 Debug:
   BroadcastTraceDir:
   DeliverTraceDir:
@@ -94,7 +61,7 @@ Consensus:
   SnapDir: {{ .OrdererDir Orderer }}/etcdraft/snapshot
   EvictionSuspicion: 10s
 Operations:
-  ListenAddress: 0.0.0.0:{{ .OrdererPort Orderer "Operations" }}
+  ListenAddress: {{ .OrdererAddress Orderer "Operations" }}
   TLS:
     Enabled: false
     PrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
@@ -108,7 +75,7 @@ Metrics:
   Provider: {{ .MetricsProvider }}
   Statsd:
     Network: udp
-    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}0.0.0.0:8125{{ end }}
     WriteInterval: 5s
     Prefix: {{ ReplaceAll (ToLower Orderer.ID) "." "_" }}
 {{- end }}

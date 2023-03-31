@@ -38,7 +38,6 @@ import (
 	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
 	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
-	commands2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/tracing/commands"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view/cmd"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/crypto"
@@ -184,9 +183,6 @@ func (p *Platform) Members() []grouper.Member {
 			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
 		}
 	}
-	if len(p.Topology.TraceAggregator) != 0 {
-		members = append(members, grouper.Member{Name: "tracing-aggregator", Runner: p.MetricsAggregator()})
-	}
 	return members
 }
 
@@ -309,6 +305,7 @@ func (p *Platform) CheckTopology() {
 			ports[portName] = p.Context.ReservePort()
 		}
 		p.Context.SetPortsByPeerID("fsc", peer.ID(), ports)
+		p.Context.SetHostByPeerID("fsc", peer.ID(), "0.0.0.0")
 		users[orgName] = users[orgName] + 1
 		userNames[orgName] = append(userNames[orgName], node.Name)
 
@@ -385,7 +382,7 @@ func (p *Platform) GenerateCryptoConfig() {
 	Expect(err).NotTo(HaveOccurred())
 	defer crypto.Close()
 
-	t, err := template.New("crypto").Parse(node2.DefaultCryptoTemplate)
+	t, err := template.New("crypto").Parse(p.Topology.Templates.CryptoTemplate())
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(t.Execute(io.MultiWriter(crypto), p)).NotTo(HaveOccurred())
@@ -436,7 +433,7 @@ func (p *Platform) GenerateCoreConfig(peer *node2.Peer) {
 		"KVSOrionDatabase":       func() string { return GetKVSOrionDatabase(peer) },
 		"KVSOrionCreator":        func() string { return GetKVSOrionCreator(peer) },
 		"Resolvers":              func() []*Resolver { return resolvers },
-	}).Parse(node2.CoreTemplate)
+	}).Parse(p.Topology.Templates.CoreTemplate())
 	Expect(err).NotTo(HaveOccurred())
 	Expect(t.Execute(io.MultiWriter(core), p)).NotTo(HaveOccurred())
 }
@@ -540,9 +537,13 @@ func (p *Platform) GenerateCmd(output io.Writer, node *node2.Peer) string {
 	t, err := template.New("node").Funcs(template.FuncMap{
 		"Alias":       func(s string) string { return node.Node.Alias(s) },
 		"InstallView": func() bool { return len(node.Node.Responders) != 0 || len(node.Node.Factories) != 0 },
-	}).Parse(node2.DefaultTemplate)
+	}).Parse(p.Topology.Templates.NodeTemplate())
 	Expect(err).NotTo(HaveOccurred())
-	Expect(t.Execute(io.MultiWriter(output), node)).NotTo(HaveOccurred())
+
+	Expect(t.Execute(io.MultiWriter(output), struct {
+		*Platform
+		*node2.Peer
+	}{p, node})).NotTo(HaveOccurred())
 
 	return p.NodeCmdPackage(node)
 }
@@ -713,7 +714,7 @@ func (p *Platform) PeersInOrg(orgName string) []*node2.Peer {
 }
 
 func (p *Platform) PeerAddress(peer *node2.Peer, portName api.PortName) string {
-	return fmt.Sprintf("127.0.0.1:%d", p.PeerPort(peer, portName))
+	return fmt.Sprintf("%s:%d", p.Context.HostByPeerID("fsc", peer.ID()), p.PeerPort(peer, portName))
 }
 
 func (p *Platform) PeerPort(peer *node2.Peer, portName api.PortName) uint16 {
@@ -737,19 +738,6 @@ func (p *Platform) GetSigningIdentity(peer *node2.Peer) (view.SigningIdentity, e
 
 func (p *Platform) GetAdminSigningIdentity(peer *node2.Peer) (view.SigningIdentity, error) {
 	return view.NewX509SigningIdentity(p.AdminLocalMSPIdentityCert(peer), p.AdminLocalMSPPrivateKey(peer))
-}
-
-func (p *Platform) MetricsAggregator() *runner2.Runner {
-	cmd := common.NewCommand(p.Builder.Build(p.Topology.TraceAggregator), &commands2.AggregatorStart{NodeID: "aggregator"})
-	config := runner2.Config{
-		AnsiColorCode:     common.NextColor(),
-		Name:              "aggregator",
-		Command:           cmd,
-		StartCheck:        `Started aggregator`,
-		StartCheckTimeout: 1 * time.Minute,
-	}
-
-	return runner2.New(config)
 }
 
 func (p *Platform) listTLSCACertificates() []string {

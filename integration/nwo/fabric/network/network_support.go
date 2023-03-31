@@ -60,6 +60,7 @@ func (n *Network) AddOrg(o *topology.Organization, peers ...*topology.Peer) {
 			ports[portName] = n.Context.ReservePort()
 		}
 		n.Context.SetPortsByPeerID(n.Prefix, p.ID(), ports)
+		n.Context.SetHostByPeerID(n.Prefix, p.ID(), "0.0.0.0")
 		n.Peers = append(n.Peers, p)
 	}
 
@@ -233,6 +234,26 @@ func (n *Network) userCryptoDir(org *topology.Organization, nodeOrganizationType
 
 func (n *Network) OrgPeerCACertificatePath(org *topology.Organization) string {
 	return n.orgCACertificatePath(org, "peerOrganizations")
+}
+
+func (n *Network) OrgOrdererCACertificatePath(org *topology.Organization) string {
+	return n.orgCACertificatePath(org, "ordererOrganizations")
+}
+
+func (n *Network) OrgOrdererTLSCACertificatePath(org *topology.Organization) string {
+	return n.orgTLSCACertificatePath(org, "ordererOrganizations")
+}
+
+func (n *Network) orgTLSCACertificatePath(org *topology.Organization, nodeOrganizationType string) string {
+	return filepath.Join(
+		n.Context.RootDir(),
+		n.Prefix,
+		"crypto",
+		nodeOrganizationType,
+		org.Domain,
+		"tlsca",
+		fmt.Sprintf("tlsca.%s-cert.pem", org.Domain),
+	)
 }
 
 func (n *Network) orgCACertificatePath(org *topology.Organization, nodeOrganizationType string) string {
@@ -830,6 +851,9 @@ func (n *Network) JoinChannel(name string, o *topology.Orderer, peers ...*topolo
 	Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
 
 	for _, p := range peers {
+		if p.SkipInit {
+			continue
+		}
 		sess, err := n.PeerAdminSession(p, commands.ChannelJoin{
 			NetworkPrefix: n.Prefix,
 			BlockPath:     tempFile.Name(),
@@ -989,6 +1013,9 @@ func (n *Network) OrdererLogsFolder() string {
 func (n *Network) PeerGroupRunner() ifrit.Runner {
 	members := grouper.Members{}
 	for _, p := range n.Peers {
+		if p.SkipRunning {
+			continue
+		}
 		switch {
 		case p.Type == topology.FabricPeer:
 			members = append(members, grouper.Member{Name: p.ID(), Runner: n.PeerRunner(p)})
@@ -1106,7 +1133,7 @@ func (n *Network) DiscoveredPeer(p *topology.Peer, chaincodes ...string) Discove
 
 	return DiscoveredPeer{
 		MSPID:      n.Organization(p.Organization).MSPID,
-		Endpoint:   fmt.Sprintf("127.0.0.1:%d", n.PeerPort(p, ListenPort)),
+		Endpoint:   n.PeerAddress(p, ListenPort),
 		Identity:   string(peerCert),
 		Chaincodes: chaincodes,
 	}
@@ -1118,7 +1145,7 @@ func (n *Network) DiscoveredPeerMatcher(p *topology.Peer, chaincodes ...string) 
 
 	return gstruct.MatchAllFields(gstruct.Fields{
 		"MSPID":      Equal(n.Organization(p.Organization).MSPID),
-		"Endpoint":   Equal(fmt.Sprintf("127.0.0.1:%d", n.PeerPort(p, ListenPort))),
+		"Endpoint":   Equal(n.PeerAddress(p, ListenPort)),
 		"Identity":   Equal(string(peerCert)),
 		"Chaincodes": containElements(chaincodes...),
 	})
@@ -1364,14 +1391,21 @@ func OrdererPortNames() []api.PortName {
 // This assumes that the orderer is listening on 0.0.0.0 or 127.0.0.1 and is
 // available on the loopback address.
 func (n *Network) OrdererAddress(o *topology.Orderer, portName api.PortName) string {
-	return fmt.Sprintf("127.0.0.1:%d", n.OrdererPort(o, portName))
+	return fmt.Sprintf("%s:%d", n.OrdererHost(o), n.OrdererPort(o, portName))
 }
 
 // OrdererPort returns the named port reserved for the Orderer instance.
 func (n *Network) OrdererPort(o *topology.Orderer, portName api.PortName) uint16 {
-	ordererPorts := n.PortsByOrdererID[o.ID()]
+	ordererPorts := n.Context.PortsByOrdererID(n.Prefix, o.ID())
 	Expect(ordererPorts).NotTo(BeNil(), "expected orderer ports to be initialized [%s]", o.ID())
 	return ordererPorts[portName]
+}
+
+// OrdererHost returns the hostname of the Orderer instance.
+func (n *Network) OrdererHost(o *topology.Orderer) string {
+	ordererHost := n.Context.HostByOrdererID(n.Prefix, o.ID())
+	Expect(ordererHost).NotTo(BeNil(), "expected orderer host to be initialized [%s]", o.ID())
+	return ordererHost
 }
 
 // PeerAddress returns the address (host and port) exposed by the Peer for the
@@ -1381,11 +1415,14 @@ func (n *Network) OrdererPort(o *topology.Orderer, portName api.PortName) uint16
 // This assumes that the peer is listening on 0.0.0.0 and is available on the
 // loopback address.
 func (n *Network) PeerAddress(p *topology.Peer, portName api.PortName) string {
-	return fmt.Sprintf("127.0.0.1:%d", n.PeerPort(p, portName))
+	if p.Hostname != "" {
+		return fmt.Sprintf("%s:%d", p.Hostname, n.PeerPort(p, portName))
+	}
+	return fmt.Sprintf("%s:%d", n.PeerHost(p), n.PeerPort(p, portName))
 }
 
 func (n *Network) PeerAddressByName(p *topology.Peer, portName api.PortName) string {
-	return fmt.Sprintf("127.0.0.1:%d", n.PeerPortByName(p, portName))
+	return fmt.Sprintf("%s:%d", n.PeerHost(p), n.PeerPortByName(p, portName))
 }
 
 // PeerPort returns the named port reserved for the Peer instance.
@@ -1396,6 +1433,13 @@ func (n *Network) PeerPort(p *topology.Peer, portName api.PortName) uint16 {
 	}
 	Expect(peerPorts).NotTo(BeNil(), "PeerPort [%s,%s] not found", p.ID(), portName)
 	return peerPorts[portName]
+}
+
+// PeerHost returns the hostname of the Peer instance.
+func (n *Network) PeerHost(o *topology.Peer) string {
+	peerHost := n.Context.HostByPeerID(n.Prefix, o.ID())
+	Expect(peerHost).NotTo(BeNil(), "expected host host to be initialized [%s]", o.ID())
+	return peerHost
 }
 
 func (n *Network) PeerPortByName(p *topology.Peer, portName api.PortName) uint16 {
@@ -1542,6 +1586,8 @@ func (n *Network) GenerateCoreConfig(p *topology.Peer) {
 		var refPeers []*topology.Peer
 		coreTemplate := n.Templates.CoreTemplate()
 		defaultNetwork := n.topology.Default
+		driver := n.topology.Driver
+		tlsEnabled := n.topology.TLSEnabled
 		if p.Type == topology.FSCPeer {
 			coreTemplate = n.Templates.FSCFabricExtensionTemplate()
 			peers := n.PeersInOrg(p.Organization)
@@ -1575,7 +1621,9 @@ func (n *Network) GenerateCoreConfig(p *topology.Peer) {
 			"FSCNodeVaultPath":            func() string { return n.FSCNodeVaultDir(p) },
 			"FabricName":                  func() string { return n.topology.Name() },
 			"DefaultNetwork":              func() bool { return defaultNetwork },
+			"Driver":                      func() string { return driver },
 			"Chaincodes":                  func(channel string) []*topology.ChannelChaincode { return n.Chaincodes(channel) },
+			"TLSEnabled":                  func() bool { return tlsEnabled },
 		}).Parse(coreTemplate)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -1589,6 +1637,22 @@ func (n *Network) GenerateCoreConfig(p *topology.Peer) {
 func (n *Network) PeersByName(names []string) []*topology.Peer {
 	var peers []*topology.Peer
 	for _, p := range n.Peers {
+		for _, name := range names {
+			if p.Name == name {
+				peers = append(peers, p)
+				break
+			}
+		}
+	}
+	return peers
+}
+
+func (n *Network) PeersForChaincodeByName(names []string) []*topology.Peer {
+	var peers []*topology.Peer
+	for _, p := range n.Peers {
+		if p.SkipInit {
+			continue
+		}
 		for _, name := range names {
 			if p.Name == name {
 				peers = append(peers, p)
@@ -1625,6 +1689,10 @@ func (n *Network) Chaincodes(channel string) []*topology.ChannelChaincode {
 		}
 	}
 	return res
+}
+
+func (n *Network) AppendPeer(peer *topology.Peer) {
+	n.Peers = append(n.Peers, peer)
 }
 
 func GetLinkedIdentities(peer *topology.Peer) []string {

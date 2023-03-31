@@ -46,7 +46,6 @@ type Network struct {
 	StatsdEndpoint     string
 	ClientAuthRequired bool
 
-	PortsByOrdererID  map[string]api.Ports
 	Logging           *topology.Logging
 	PvtTxSupport      bool
 	PvtTxCCSupport    bool
@@ -87,7 +86,6 @@ func New(reg api.Context, topology *topology.Topology, builderClient BuilderClie
 		NetworkID:         NetworkID,
 		EventuallyTimeout: 20 * time.Minute,
 		MetricsProvider:   "prometheus",
-		PortsByOrdererID:  map[string]api.Ports{},
 
 		Organizations:     topology.Organizations,
 		Consensus:         topology.Consensus,
@@ -236,7 +234,7 @@ func (n *Network) Cleanup() {
 
 func (n *Network) DeployChaincode(chaincode *topology.ChannelChaincode) {
 	orderer := n.Orderer("orderer")
-	peers := n.PeersByName(chaincode.Peers)
+	peers := n.PeersForChaincodeByName(chaincode.Peers)
 
 	if len(chaincode.Chaincode.PackageFile) == 0 {
 		if len(chaincode.Path) != 0 {
@@ -268,7 +266,7 @@ func (n *Network) AddExtension(ex Extension) {
 	n.Extensions = append(n.Extensions, ex)
 }
 
-//UpdateChaincode deploys the new version of the chaincode passed by chaincodeId
+// UpdateChaincode deploys the new version of the chaincode passed by chaincodeId
 func (n *Network) UpdateChaincode(chaincodeId string, version string, path string, packageFile string) {
 	var cc *topology.ChannelChaincode
 	for _, chaincode := range n.topology.Chaincodes {
